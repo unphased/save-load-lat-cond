@@ -26,7 +26,9 @@ Inputs:
 - `latent`, `positive`, `negative`
 - `storage`: `memory` (fast, process-local) or `disk` (persistent)
 - `queue_name`: optional queue key (default `default`)
-- `store_device`: for `memory` mode only: `cpu` (default, frees VRAM after the run) or `keep`
+- `store_device`: for `memory` mode only: `cpu (free VRAM)` (default) or `keep (as-is)` (keeps tensors on their current device, often GPU)
+
+This node is an output node (no outputs); put it at the end of your Stage A workflow.
 
 ### Load Latent + Cond (Queue)
 
@@ -35,10 +37,11 @@ Inputs:
 - `queue_name`: must match what you saved to
 - `consume`: if true, deletes the item after reading it (default true)
 - `reset_cursor`: if true, starts reading from the beginning again (default false)
-- `load_device`: `auto` (default, moves tensors to ComfyUI's active torch device) or `cpu`
+- `load_device`: `auto (comfy device)` (default, moves tensors to ComfyUI's active torch device) or `cpu`
 
 Note: when `consume=false`, the loader still advances an internal per-queue cursor so repeated runs move forward instead of reusing the same first item.
 
 ## Disk location
 
-When `storage=disk`, items are saved as `.pt` files under `ComfyUI/output/save_load_lat_cond/<queue_name>/`.
+When `storage=disk`, items are saved as `.pt` files under ComfyUI's output directory:
+`<output>/save_load_lat_cond/<queue_name>/`

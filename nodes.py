@@ -43,6 +43,10 @@ def _to_cpu(obj: Any) -> Any:
     return _map_tensors(obj, lambda t: t.detach().to("cpu"))
 
 
+def _detach(obj: Any) -> Any:
+    return _map_tensors(obj, lambda t: t.detach())
+
+
 def _to_device(obj: Any, device: str) -> Any:
     if device == "cpu":
         return _to_cpu(obj)
@@ -160,6 +164,13 @@ class _Triplet:
 
 
 class SaveLatentCond:
+    DESCRIPTION = (
+        "Queues a (latent, positive, negative) triplet for later reuse.\n"
+        "storage=memory keeps items in-process; storage=disk writes .pt files under ComfyUI's output directory:\n"
+        "  <output>/save_load_lat_cond/<queue_name>/\n"
+        "store_device (memory only): cpu moves tensors to CPU to free VRAM; keep leaves them on their current device."
+    )
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -169,17 +180,21 @@ class SaveLatentCond:
                 "negative": ("CONDITIONING",),
                 "storage": (["memory", "disk"], {"default": "memory"}),
                 "queue_name": ("STRING", {"default": "default"}),
-                "store_device": (["cpu", "keep"], {"default": "cpu"}),
+                "store_device": (
+                    ["cpu (free VRAM)", "keep (as-is)", "cpu", "keep"],
+                    {"default": "cpu (free VRAM)"},
+                ),
             }
         }
 
-    RETURN_TYPES = ("LATENT", "CONDITIONING", "CONDITIONING")
-    RETURN_NAMES = ("latent", "positive", "negative")
+    RETURN_TYPES = ()
+    OUTPUT_NODE = True
     FUNCTION = "save"
     CATEGORY = "save-load-lat-cond"
 
     def save(self, latent, positive, negative, storage, queue_name, store_device):
         queue_name = _sanitize_queue_name(queue_name)
+        store_mode = "cpu" if str(store_device).startswith("cpu") else "keep"
 
         if storage == "disk":
             path = _disk_item_path(queue_name)
@@ -191,18 +206,25 @@ class SaveLatentCond:
             torch.save(payload, path)
         else:
             triplet = _Triplet(
-                latent=_to_cpu(latent) if store_device == "cpu" else latent,
-                positive=_to_cpu(positive) if store_device == "cpu" else positive,
-                negative=_to_cpu(negative) if store_device == "cpu" else negative,
+                latent=_to_cpu(latent) if store_mode == "cpu" else _detach(latent),
+                positive=_to_cpu(positive) if store_mode == "cpu" else _detach(positive),
+                negative=_to_cpu(negative) if store_mode == "cpu" else _detach(negative),
             )
             q, lock = _get_mem_queue(queue_name)
             with lock:
                 q.append((triplet.latent, triplet.positive, triplet.negative))
 
-        return (latent, positive, negative)
+        return ()
 
 
 class LoadLatentCond:
+    DESCRIPTION = (
+        "Loads the next queued (latent, positive, negative) triplet.\n"
+        "storage=disk reads .pt files from:\n"
+        "  <output>/save_load_lat_cond/<queue_name>/\n"
+        "When consume=false, a per-queue cursor advances so repeated loads return successive items (cursor stored as .cursor for disk)."
+    )
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -211,7 +233,7 @@ class LoadLatentCond:
                 "queue_name": ("STRING", {"default": "default"}),
                 "consume": ("BOOLEAN", {"default": True}),
                 "reset_cursor": ("BOOLEAN", {"default": False}),
-                "load_device": (["auto", "cpu"], {"default": "auto"}),
+                "load_device": (["auto (comfy device)", "cpu", "auto"], {"default": "auto (comfy device)"}),
             }
         }
 
@@ -222,7 +244,8 @@ class LoadLatentCond:
 
     def load(self, storage, queue_name, consume, reset_cursor, load_device):
         queue_name = _sanitize_queue_name(queue_name)
-        device = _get_auto_device() if load_device == "auto" else "cpu"
+        load_mode = "auto" if str(load_device).startswith("auto") else "cpu"
+        device = _get_auto_device() if load_mode == "auto" else "cpu"
 
         if storage == "disk":
             _, payload = _disk_pop_next(queue_name, consume=consume, reset_cursor=reset_cursor)
