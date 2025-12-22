@@ -2,9 +2,8 @@ import os
 import re
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import torch
 
@@ -14,8 +13,9 @@ except Exception:  # pragma: no cover
     folder_paths = None
 
 
-_MEM_QUEUES: Dict[str, Deque[Tuple[Any, Any, Any]]] = {}
+_MEM_QUEUES: Dict[str, List[Tuple[Any, Any, Any]]] = {}
 _MEM_LOCKS: Dict[str, threading.Lock] = {}
+_MEM_CURSORS: Dict[str, int] = {}
 _GLOBAL_LOCK = threading.Lock()
 
 
@@ -58,12 +58,13 @@ def _get_auto_device() -> str:
         return "cpu"
 
 
-def _get_mem_queue(queue_name: str) -> Tuple[Deque[Tuple[Any, Any, Any]], threading.Lock]:
+def _get_mem_queue(queue_name: str) -> Tuple[List[Tuple[Any, Any, Any]], threading.Lock]:
     queue_name = _sanitize_queue_name(queue_name)
     with _GLOBAL_LOCK:
         if queue_name not in _MEM_QUEUES:
-            _MEM_QUEUES[queue_name] = deque()
+            _MEM_QUEUES[queue_name] = []
             _MEM_LOCKS[queue_name] = threading.Lock()
+            _MEM_CURSORS[queue_name] = 0
         return _MEM_QUEUES[queue_name], _MEM_LOCKS[queue_name]
 
 
@@ -88,14 +89,61 @@ def _disk_item_path(queue_name: str) -> str:
     return os.path.join(_get_disk_dir(queue_name), filename)
 
 
-def _disk_pop_oldest(queue_name: str, *, consume: bool) -> Tuple[str, dict]:
+def _disk_cursor_path(queue_name: str) -> str:
     directory = _get_disk_dir(queue_name)
+    return os.path.join(directory, ".cursor")
+
+
+def _disk_read_cursor(queue_name: str) -> str:
+    path = _disk_cursor_path(queue_name)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def _disk_write_cursor(queue_name: str, cursor: str) -> None:
+    path = _disk_cursor_path(queue_name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(cursor)
+
+
+def _disk_clear_cursor(queue_name: str) -> None:
+    path = _disk_cursor_path(queue_name)
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def _disk_pop_next(queue_name: str, *, consume: bool, reset_cursor: bool) -> Tuple[str, dict]:
+    directory = _get_disk_dir(queue_name)
+    if reset_cursor:
+        _disk_clear_cursor(queue_name)
     entries = [f for f in os.listdir(directory) if f.endswith(".pt")]
     if not entries:
         raise RuntimeError(f"Queue '{_sanitize_queue_name(queue_name)}' is empty (disk).")
     entries.sort()
-    path = os.path.join(directory, entries[0])
+    cursor = "" if reset_cursor else _disk_read_cursor(queue_name)
+    idx = 0
+    if cursor:
+        for i, name in enumerate(entries):
+            if name == cursor:
+                idx = i + 1
+                break
+            if name > cursor:
+                idx = i
+                break
+        else:
+            idx = len(entries)
+    if idx >= len(entries):
+        raise RuntimeError(f"Queue '{_sanitize_queue_name(queue_name)}' has no more unread items (disk).")
+
+    filename = entries[idx]
+    path = os.path.join(directory, filename)
     payload = torch.load(path, map_location="cpu")
+    _disk_write_cursor(queue_name, filename)
     if consume:
         try:
             os.remove(path)
@@ -162,6 +210,7 @@ class LoadLatentCond:
                 "storage": (["memory", "disk"], {"default": "memory"}),
                 "queue_name": ("STRING", {"default": "default"}),
                 "consume": ("BOOLEAN", {"default": True}),
+                "reset_cursor": ("BOOLEAN", {"default": False}),
                 "load_device": (["auto", "cpu"], {"default": "auto"}),
             }
         }
@@ -171,24 +220,29 @@ class LoadLatentCond:
     FUNCTION = "load"
     CATEGORY = "save-load-lat-cond"
 
-    def load(self, storage, queue_name, consume, load_device):
+    def load(self, storage, queue_name, consume, reset_cursor, load_device):
         queue_name = _sanitize_queue_name(queue_name)
         device = _get_auto_device() if load_device == "auto" else "cpu"
 
         if storage == "disk":
-            _, payload = _disk_pop_oldest(queue_name, consume=consume)
+            _, payload = _disk_pop_next(queue_name, consume=consume, reset_cursor=reset_cursor)
             latent = payload["latent"]
             positive = payload["positive"]
             negative = payload["negative"]
         else:
             q, lock = _get_mem_queue(queue_name)
             with lock:
+                if reset_cursor:
+                    _MEM_CURSORS[queue_name] = 0
+                cursor = _MEM_CURSORS.get(queue_name, 0)
                 if not q:
                     raise RuntimeError(f"Queue '{queue_name}' is empty (memory).")
+                if cursor >= len(q):
+                    raise RuntimeError(f"Queue '{queue_name}' has no more unread items (memory).")
+                latent, positive, negative = q[cursor]
                 if consume:
-                    latent, positive, negative = q.popleft()
+                    q.pop(cursor)
                 else:
-                    latent, positive, negative = q[0]
+                    _MEM_CURSORS[queue_name] = cursor + 1
 
         return (_to_device(latent, device), _to_device(positive, device), _to_device(negative, device))
-

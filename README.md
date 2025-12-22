@@ -33,8 +33,11 @@ Inputs:
 Inputs:
 - `storage`: `memory` or `disk`
 - `queue_name`: must match what you saved to
-- `consume`: if true, pops from the queue / deletes the disk file (default true)
+- `consume`: if true, deletes the item after reading it (default true)
+- `reset_cursor`: if true, starts reading from the beginning again (default false)
 - `load_device`: `auto` (default, moves tensors to ComfyUI's active torch device) or `cpu`
+
+Note: when `consume=false`, the loader still advances an internal per-queue cursor so repeated runs move forward instead of reusing the same first item.
 
 ## Disk location
 
