@@ -166,9 +166,9 @@ class _Triplet:
 class SaveLatentCond:
     DESCRIPTION = (
         "Queues a (latent, positive, negative) triplet for later reuse.\n"
-        "storage=memory keeps items in-process; storage=disk writes .pt files under ComfyUI's output directory:\n"
+        "mode=cpu/gpu keeps items in-process (cpu frees VRAM; gpu keeps on current device).\n"
+        "mode=disk writes .pt files under ComfyUI's output directory:\n"
         "  <output>/save_load_lat_cond/<queue_name>/\n"
-        "store_device (memory only): cpu moves tensors to CPU to free VRAM; keep leaves them on their current device."
     )
 
     @classmethod
@@ -178,12 +178,8 @@ class SaveLatentCond:
                 "latent": ("LATENT",),
                 "positive": ("CONDITIONING",),
                 "negative": ("CONDITIONING",),
-                "storage": (["memory", "disk"], {"default": "memory"}),
+                "mode": (["cpu", "gpu", "disk"], {"default": "cpu"}),
                 "queue_name": ("STRING", {"default": "default"}),
-                "store_device": (
-                    ["cpu (free VRAM)", "keep (as-is)", "cpu", "keep"],
-                    {"default": "cpu (free VRAM)"},
-                ),
             }
         }
 
@@ -192,11 +188,10 @@ class SaveLatentCond:
     FUNCTION = "save"
     CATEGORY = "save-load-lat-cond"
 
-    def save(self, latent, positive, negative, storage, queue_name, store_device):
+    def save(self, latent, positive, negative, mode, queue_name):
         queue_name = _sanitize_queue_name(queue_name)
-        store_mode = "cpu" if str(store_device).startswith("cpu") else "keep"
 
-        if storage == "disk":
+        if mode == "disk":
             path = _disk_item_path(queue_name)
             payload = {
                 "latent": _to_cpu(latent),
@@ -205,6 +200,7 @@ class SaveLatentCond:
             }
             torch.save(payload, path)
         else:
+            store_mode = "cpu" if mode == "cpu" else "keep"
             triplet = _Triplet(
                 latent=_to_cpu(latent) if store_mode == "cpu" else _detach(latent),
                 positive=_to_cpu(positive) if store_mode == "cpu" else _detach(positive),
@@ -220,20 +216,20 @@ class SaveLatentCond:
 class LoadLatentCond:
     DESCRIPTION = (
         "Loads the next queued (latent, positive, negative) triplet.\n"
-        "storage=disk reads .pt files from:\n"
+        "mode=disk reads .pt files from:\n"
         "  <output>/save_load_lat_cond/<queue_name>/\n"
-        "When consume=false, a per-queue cursor advances so repeated loads return successive items (cursor stored as .cursor for disk)."
+        "When consume=false, a per-queue cursor advances so repeated loads return successive items (cursor stored as .cursor for disk).\n"
+        "mode=cpu returns CPU tensors; mode=gpu moves tensors to ComfyUI's active torch device."
     )
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "storage": (["memory", "disk"], {"default": "memory"}),
+                "mode": (["cpu", "gpu", "disk"], {"default": "gpu"}),
                 "queue_name": ("STRING", {"default": "default"}),
                 "consume": ("BOOLEAN", {"default": True}),
                 "reset_cursor": ("BOOLEAN", {"default": False}),
-                "load_device": (["auto (comfy device)", "cpu", "auto"], {"default": "auto (comfy device)"}),
             }
         }
 
@@ -242,12 +238,11 @@ class LoadLatentCond:
     FUNCTION = "load"
     CATEGORY = "save-load-lat-cond"
 
-    def load(self, storage, queue_name, consume, reset_cursor, load_device):
+    def load(self, mode, queue_name, consume, reset_cursor):
         queue_name = _sanitize_queue_name(queue_name)
-        load_mode = "auto" if str(load_device).startswith("auto") else "cpu"
-        device = _get_auto_device() if load_mode == "auto" else "cpu"
+        device = "cpu" if mode == "cpu" else _get_auto_device()
 
-        if storage == "disk":
+        if mode == "disk":
             _, payload = _disk_pop_next(queue_name, consume=consume, reset_cursor=reset_cursor)
             latent = payload["latent"]
             positive = payload["positive"]
