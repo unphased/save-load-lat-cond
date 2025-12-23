@@ -29,7 +29,7 @@ Inputs:
 
 This node is an output node (no outputs); put it at the end of your Stage A workflow.
 
-After it runs, the node UI shows the current queue size (`unread / total`) for the selected `mode` + `queue_name`.
+After it runs, the node UI shows the unread items (timestamps) and queue size for the selected `mode` + `queue_name`.
 
 ### Load Latent + Cond (Queue)
 
@@ -41,7 +41,12 @@ Inputs:
 
 Note: when `consume=false`, the loader still advances an internal per-queue cursor so repeated runs move forward instead of reusing the same first item.
 
-After it runs, the node UI shows the queue size before and after the load (`unread` and `total`).
+After it runs, the node UI shows the remaining unread items (timestamps) plus the queue size before/after the load.
+
+The load node also exposes a `cursor` widget/output (0-based index of the next unread item in the current sorted list):
+- `cursor=-1` uses the internal per-queue cursor (default behavior)
+- `reset_cursor=true` starts from `cursor=0`
+- setting `cursor>=0` overrides where the next load starts
 
 ## Disk location
 

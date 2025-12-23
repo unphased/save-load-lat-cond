@@ -3,6 +3,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 import torch
@@ -13,7 +14,7 @@ except Exception:  # pragma: no cover
     folder_paths = None
 
 
-_MEM_QUEUES: Dict[str, List[Tuple[Any, Any, Any]]] = {}
+_MEM_QUEUES: Dict[str, List[Tuple[Any, Any, Any, Any]]] = {}
 _MEM_LOCKS: Dict[str, threading.Lock] = {}
 _MEM_CURSORS: Dict[str, int] = {}
 _GLOBAL_LOCK = threading.Lock()
@@ -62,7 +63,7 @@ def _get_auto_device() -> str:
         return "cpu"
 
 
-def _get_mem_queue(queue_name: str) -> Tuple[List[Tuple[Any, Any, Any]], threading.Lock]:
+def _get_mem_queue(queue_name: str) -> Tuple[List[Tuple[Any, Any, Any, Any]], threading.Lock]:
     queue_name = _sanitize_queue_name(queue_name)
     with _GLOBAL_LOCK:
         if queue_name not in _MEM_QUEUES:
@@ -156,6 +157,12 @@ def _disk_pop_next(queue_name: str, *, consume: bool, reset_cursor: bool) -> Tup
     return path, payload
 
 
+def _format_ns_timestamp(ns: int) -> str:
+    if not ns:
+        return "unknown-time"
+    return datetime.fromtimestamp(ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
 def _disk_next_unread_index(entries: List[str], cursor: str) -> int:
     if not cursor:
         return 0
@@ -167,13 +174,35 @@ def _disk_next_unread_index(entries: List[str], cursor: str) -> int:
     return len(entries)
 
 
+def _disk_cursor_to_next_index(entries: List[str], cursor: str) -> int:
+    cursor = (cursor or "").strip()
+    if cursor.isdigit():
+        try:
+            return max(0, min(int(cursor), len(entries)))
+        except Exception:  # pragma: no cover
+            return 0
+    return _disk_next_unread_index(entries, cursor)
+
+
+def _disk_set_cursor_from_next_index(queue_name: str, next_index: int) -> None:
+    directory = _get_disk_dir(queue_name)
+    entries = [f for f in os.listdir(directory) if f.endswith(".pt")]
+    entries.sort()
+    next_index = max(0, min(int(next_index), len(entries)))
+    if next_index <= 0:
+        _disk_clear_cursor(queue_name)
+        return
+    cursor_filename = entries[next_index - 1]
+    _disk_write_cursor(queue_name, cursor_filename)
+
+
 def _disk_counts(queue_name: str, *, reset_cursor: bool) -> Tuple[int, int]:
     directory = _get_disk_dir(queue_name)
     entries = [f for f in os.listdir(directory) if f.endswith(".pt")]
     entries.sort()
     total = len(entries)
     cursor = "" if reset_cursor else _disk_read_cursor(queue_name)
-    idx = 0 if reset_cursor else _disk_next_unread_index(entries, cursor)
+    idx = 0 if reset_cursor else _disk_cursor_to_next_index(entries, cursor)
     unread = max(0, total - idx)
     return total, unread
 
@@ -188,6 +217,66 @@ def _mem_counts(queue_name: str, *, reset_cursor: bool) -> Tuple[int, int, int]:
         total = len(q)
         unread = max(0, total - cursor)
         return total, cursor, unread
+
+
+def _disk_list_lines(queue_name: str, *, next_index: int, max_items: int = 200) -> List[str]:
+    directory = _get_disk_dir(queue_name)
+    entries = [f for f in os.listdir(directory) if f.endswith(".pt")]
+    entries.sort()
+    if not entries:
+        return ["(empty)"]
+
+    next_index = max(0, min(int(next_index), len(entries)))
+    lines: List[str] = []
+    remaining = entries[next_index:]
+    if not remaining:
+        return ["(no unread items)"]
+
+    show = remaining[:max_items]
+    for i, name in enumerate(show, start=next_index):
+        ns = 0
+        match = re.match(r"^(\d+)_\d+\.pt$", name)
+        if match:
+            try:
+                ns = int(match.group(1))
+            except Exception:  # pragma: no cover
+                ns = 0
+        if not ns:
+            try:
+                ns = int(os.path.getmtime(os.path.join(directory, name)) * 1_000_000_000)
+            except Exception:  # pragma: no cover
+                ns = 0
+        lines.append(f"[{i}] {_format_ns_timestamp(ns)}  {name}")
+    more = len(remaining) - len(show)
+    if more > 0:
+        lines.append(f"... and {more} more")
+    return lines
+
+
+def _mem_list_lines(queue_name: str, *, next_index: int, max_items: int = 200) -> List[str]:
+    queue_name = _sanitize_queue_name(queue_name)
+    q, lock = _get_mem_queue(queue_name)
+    with lock:
+        if not q:
+            return ["(empty)"]
+        next_index = max(0, min(int(next_index), len(q)))
+        remaining = q[next_index:]
+        if not remaining:
+            return ["(no unread items)"]
+        show = remaining[:max_items]
+        lines: List[str] = []
+        for i, item in enumerate(show, start=next_index):
+            ts_ns = 0
+            if isinstance(item, tuple) and len(item) == 4:
+                try:
+                    ts_ns = int(item[0]) or 0
+                except Exception:  # pragma: no cover
+                    ts_ns = 0
+            lines.append(f"[{i}] {_format_ns_timestamp(ts_ns)}")
+        more = len(remaining) - len(show)
+        if more > 0:
+            lines.append(f"... and {more} more")
+        return lines
 
 
 @dataclass(frozen=True)
@@ -233,8 +322,13 @@ class SaveLatentCond:
                 "negative": _to_cpu(negative),
             }
             torch.save(payload, path)
-            total, unread = _disk_counts(queue_name, reset_cursor=False)
-            msg = f"Queue '{queue_name}' (disk): {unread} unread / {total} total"
+            entries = [f for f in os.listdir(_get_disk_dir(queue_name)) if f.endswith(".pt")]
+            entries.sort()
+            next_idx = _disk_cursor_to_next_index(entries, _disk_read_cursor(queue_name))
+            total = len(entries)
+            unread = max(0, total - next_idx)
+            header = f"Queue '{queue_name}' (disk): {unread} unread / {total} total (cursor={next_idx})"
+            lines = [header, "Unread items:"] + _disk_list_lines(queue_name, next_index=next_idx)
         else:
             store_mode = "cpu" if mode == "cpu" else "keep"
             triplet = _Triplet(
@@ -242,15 +336,17 @@ class SaveLatentCond:
                 positive=_to_cpu(positive) if store_mode == "cpu" else _detach(positive),
                 negative=_to_cpu(negative) if store_mode == "cpu" else _detach(negative),
             )
+            ts_ns = time.time_ns()
             q, lock = _get_mem_queue(queue_name)
             with lock:
-                q.append((triplet.latent, triplet.positive, triplet.negative))
+                q.append((ts_ns, triplet.latent, triplet.positive, triplet.negative))
                 total = len(q)
                 cursor = _MEM_CURSORS.get(queue_name, 0)
                 unread = max(0, total - cursor)
-            msg = f"Queue '{queue_name}' ({mode}): {unread} unread / {total} total"
+            header = f"Queue '{queue_name}' ({mode}): {unread} unread / {total} total (cursor={cursor})"
+            lines = [header, "Unread items:"] + _mem_list_lines(queue_name, next_index=cursor)
 
-        return {"ui": {"text": [msg]}, "result": ()}
+        return {"ui": {"text": lines}, "result": ()}
 
 
 class LoadLatentCond:
@@ -270,16 +366,17 @@ class LoadLatentCond:
                 "queue_name": ("STRING", {"default": "default"}),
                 "consume": ("BOOLEAN", {"default": True}),
                 "reset_cursor": ("BOOLEAN", {"default": False}),
+                "cursor": ("INT", {"default": -1, "min": -1, "max": 1_000_000_000}),
             }
         }
 
-    RETURN_TYPES = ("LATENT", "CONDITIONING", "CONDITIONING")
-    RETURN_NAMES = ("latent", "positive", "negative")
+    RETURN_TYPES = ("LATENT", "CONDITIONING", "CONDITIONING", "INT")
+    RETURN_NAMES = ("latent", "positive", "negative", "cursor")
     FUNCTION = "load"
     CATEGORY = "save-load-lat-cond"
 
     @classmethod
-    def IS_CHANGED(cls, mode, queue_name, consume, reset_cursor):
+    def IS_CHANGED(cls, mode, queue_name, consume, reset_cursor, cursor):
         queue_name = _sanitize_queue_name(queue_name)
         if mode == "disk":
             directory = _get_disk_dir(queue_name)
@@ -288,54 +385,83 @@ class LoadLatentCond:
             except FileNotFoundError:
                 entries = []
             entries.sort()
-            cursor = "" if reset_cursor else _disk_read_cursor(queue_name)
+            cursor = str(cursor) if int(cursor) >= 0 else ("" if reset_cursor else _disk_read_cursor(queue_name))
             last = entries[-1] if entries else ""
             return f"{mode}:{queue_name}:{len(entries)}:{last}:{cursor}:{consume}:{reset_cursor}"
 
         q, lock = _get_mem_queue(queue_name)
         with lock:
             total = len(q)
-            cursor = _MEM_CURSORS.get(queue_name, 0)
-        return f"{mode}:{queue_name}:{total}:{cursor}:{consume}:{reset_cursor}"
+            cursor_val = int(cursor) if int(cursor) >= 0 else _MEM_CURSORS.get(queue_name, 0)
+        return f"{mode}:{queue_name}:{total}:{cursor_val}:{consume}:{reset_cursor}"
 
-    def load(self, mode, queue_name, consume, reset_cursor):
+    def load(self, mode, queue_name, consume, reset_cursor, cursor):
         queue_name = _sanitize_queue_name(queue_name)
         device = "cpu" if mode == "cpu" else _get_auto_device()
+        cursor = int(cursor)
 
         if mode == "disk":
-            before_total, before_unread = _disk_counts(queue_name, reset_cursor=reset_cursor)
-            _, payload = _disk_pop_next(queue_name, consume=consume, reset_cursor=reset_cursor)
+            directory = _get_disk_dir(queue_name)
+            entries = [f for f in os.listdir(directory) if f.endswith(".pt")]
+            entries.sort()
+            effective_reset_cursor = bool(reset_cursor) and cursor < 0
+            next_idx = 0 if effective_reset_cursor else _disk_cursor_to_next_index(entries, _disk_read_cursor(queue_name))
+            if cursor >= 0:
+                next_idx = max(0, min(cursor, len(entries)))
+                _disk_set_cursor_from_next_index(queue_name, next_idx)
+
+            before_total = len(entries)
+            before_unread = max(0, before_total - next_idx)
+            _, payload = _disk_pop_next(queue_name, consume=consume, reset_cursor=effective_reset_cursor)
             latent = payload["latent"]
             positive = payload["positive"]
             negative = payload["negative"]
-            after_total, after_unread = _disk_counts(queue_name, reset_cursor=False)
+            entries_after = [f for f in os.listdir(directory) if f.endswith(".pt")]
+            entries_after.sort()
+            after_total = len(entries_after)
+            after_next_idx = _disk_cursor_to_next_index(entries_after, _disk_read_cursor(queue_name))
+            after_unread = max(0, after_total - after_next_idx)
+            after_cursor = after_next_idx
+            list_lines = _disk_list_lines(queue_name, next_index=after_next_idx)
         else:
             q, lock = _get_mem_queue(queue_name)
             with lock:
                 if reset_cursor:
                     _MEM_CURSORS[queue_name] = 0
-                cursor = _MEM_CURSORS.get(queue_name, 0)
+                if cursor >= 0:
+                    _MEM_CURSORS[queue_name] = max(0, cursor)
+                cursor_val = _MEM_CURSORS.get(queue_name, 0)
                 before_total = len(q)
-                before_unread = max(0, before_total - cursor)
+                before_unread = max(0, before_total - cursor_val)
                 if not q:
                     raise RuntimeError(f"Queue '{queue_name}' is empty (memory).")
-                if cursor >= len(q):
+                if cursor_val >= len(q):
                     raise RuntimeError(f"Queue '{queue_name}' has no more unread items (memory).")
-                latent, positive, negative = q[cursor]
+                item = q[cursor_val]
+                if isinstance(item, tuple) and len(item) == 4:
+                    _, latent, positive, negative = item
+                else:  # backward compat for older in-memory entries
+                    latent, positive, negative = item
                 if consume:
-                    q.pop(cursor)
+                    q.pop(cursor_val)
                 else:
-                    _MEM_CURSORS[queue_name] = cursor + 1
+                    _MEM_CURSORS[queue_name] = cursor_val + 1
                 after_total = len(q)
-                after_cursor = _MEM_CURSORS.get(queue_name, cursor)
+                after_cursor = _MEM_CURSORS.get(queue_name, cursor_val)
                 after_unread = max(0, after_total - after_cursor)
+                list_lines = _mem_list_lines(queue_name, next_index=after_cursor)
 
-        msg = (
+        header = (
             f"Queue '{queue_name}' ({mode}): {before_unread}→{after_unread} unread / "
-            f"{before_total}→{after_total} total"
+            f"{before_total}→{after_total} total (cursor={after_cursor})"
         )
 
         return {
-            "ui": {"text": [msg]},
-            "result": (_to_device(latent, device), _to_device(positive, device), _to_device(negative, device)),
+            "ui": {"text": [header, "Unread items:"] + list_lines},
+            "result": (
+                _to_device(latent, device),
+                _to_device(positive, device),
+                _to_device(negative, device),
+                int(after_cursor),
+            ),
         }
