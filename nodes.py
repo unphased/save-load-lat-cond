@@ -156,6 +156,40 @@ def _disk_pop_next(queue_name: str, *, consume: bool, reset_cursor: bool) -> Tup
     return path, payload
 
 
+def _disk_next_unread_index(entries: List[str], cursor: str) -> int:
+    if not cursor:
+        return 0
+    for i, name in enumerate(entries):
+        if name == cursor:
+            return i + 1
+        if name > cursor:
+            return i
+    return len(entries)
+
+
+def _disk_counts(queue_name: str, *, reset_cursor: bool) -> Tuple[int, int]:
+    directory = _get_disk_dir(queue_name)
+    entries = [f for f in os.listdir(directory) if f.endswith(".pt")]
+    entries.sort()
+    total = len(entries)
+    cursor = "" if reset_cursor else _disk_read_cursor(queue_name)
+    idx = 0 if reset_cursor else _disk_next_unread_index(entries, cursor)
+    unread = max(0, total - idx)
+    return total, unread
+
+
+def _mem_counts(queue_name: str, *, reset_cursor: bool) -> Tuple[int, int, int]:
+    queue_name = _sanitize_queue_name(queue_name)
+    q, lock = _get_mem_queue(queue_name)
+    with lock:
+        if reset_cursor:
+            _MEM_CURSORS[queue_name] = 0
+        cursor = _MEM_CURSORS.get(queue_name, 0)
+        total = len(q)
+        unread = max(0, total - cursor)
+        return total, cursor, unread
+
+
 @dataclass(frozen=True)
 class _Triplet:
     latent: Any
@@ -199,6 +233,8 @@ class SaveLatentCond:
                 "negative": _to_cpu(negative),
             }
             torch.save(payload, path)
+            total, unread = _disk_counts(queue_name, reset_cursor=False)
+            msg = f"Queue '{queue_name}' (disk): {unread} unread / {total} total"
         else:
             store_mode = "cpu" if mode == "cpu" else "keep"
             triplet = _Triplet(
@@ -209,8 +245,12 @@ class SaveLatentCond:
             q, lock = _get_mem_queue(queue_name)
             with lock:
                 q.append((triplet.latent, triplet.positive, triplet.negative))
+                total = len(q)
+                cursor = _MEM_CURSORS.get(queue_name, 0)
+                unread = max(0, total - cursor)
+            msg = f"Queue '{queue_name}' ({mode}): {unread} unread / {total} total"
 
-        return ()
+        return {"ui": {"text": [msg]}, "result": ()}
 
 
 class LoadLatentCond:
@@ -238,21 +278,45 @@ class LoadLatentCond:
     FUNCTION = "load"
     CATEGORY = "save-load-lat-cond"
 
+    @classmethod
+    def IS_CHANGED(cls, mode, queue_name, consume, reset_cursor):
+        queue_name = _sanitize_queue_name(queue_name)
+        if mode == "disk":
+            directory = _get_disk_dir(queue_name)
+            try:
+                entries = [f for f in os.listdir(directory) if f.endswith(".pt")]
+            except FileNotFoundError:
+                entries = []
+            entries.sort()
+            cursor = "" if reset_cursor else _disk_read_cursor(queue_name)
+            last = entries[-1] if entries else ""
+            return f"{mode}:{queue_name}:{len(entries)}:{last}:{cursor}:{consume}:{reset_cursor}"
+
+        q, lock = _get_mem_queue(queue_name)
+        with lock:
+            total = len(q)
+            cursor = _MEM_CURSORS.get(queue_name, 0)
+        return f"{mode}:{queue_name}:{total}:{cursor}:{consume}:{reset_cursor}"
+
     def load(self, mode, queue_name, consume, reset_cursor):
         queue_name = _sanitize_queue_name(queue_name)
         device = "cpu" if mode == "cpu" else _get_auto_device()
 
         if mode == "disk":
+            before_total, before_unread = _disk_counts(queue_name, reset_cursor=reset_cursor)
             _, payload = _disk_pop_next(queue_name, consume=consume, reset_cursor=reset_cursor)
             latent = payload["latent"]
             positive = payload["positive"]
             negative = payload["negative"]
+            after_total, after_unread = _disk_counts(queue_name, reset_cursor=False)
         else:
             q, lock = _get_mem_queue(queue_name)
             with lock:
                 if reset_cursor:
                     _MEM_CURSORS[queue_name] = 0
                 cursor = _MEM_CURSORS.get(queue_name, 0)
+                before_total = len(q)
+                before_unread = max(0, before_total - cursor)
                 if not q:
                     raise RuntimeError(f"Queue '{queue_name}' is empty (memory).")
                 if cursor >= len(q):
@@ -262,5 +326,16 @@ class LoadLatentCond:
                     q.pop(cursor)
                 else:
                     _MEM_CURSORS[queue_name] = cursor + 1
+                after_total = len(q)
+                after_cursor = _MEM_CURSORS.get(queue_name, cursor)
+                after_unread = max(0, after_total - after_cursor)
 
-        return (_to_device(latent, device), _to_device(positive, device), _to_device(negative, device))
+        msg = (
+            f"Queue '{queue_name}' ({mode}): {before_unread}→{after_unread} unread / "
+            f"{before_total}→{after_total} total"
+        )
+
+        return {
+            "ui": {"text": [msg]},
+            "result": (_to_device(latent, device), _to_device(positive, device), _to_device(negative, device)),
+        }
