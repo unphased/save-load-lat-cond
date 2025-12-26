@@ -1,1 +1,1 @@
-refer ~/GLOBAL_AGENTS.md
+refer ~/GLOBAL_AGENTS.md.
