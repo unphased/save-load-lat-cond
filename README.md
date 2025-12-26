@@ -64,25 +64,14 @@ The load node also exposes a `cursor` widget/output (0-based index of the next u
 - `reset_cursor=true` starts from `cursor=0`
 - setting `cursor>=0` overrides where the next load starts
 
-### Pick Subdirectory (Index)
-
-Inputs:
-- `root_dir`: a directory containing subdirectories (e.g. one subdir per video, each containing PNG frames)
-- `index`: which subdirectory to pick (use a Primitive with increment for batching)
-- `sort`: `natural` (default), `name`, `name_desc`, `mtime`, `mtime_desc`
-- `on_out_of_range`: `error` (default), `clamp`, or `wrap`
-- `include_regex` / `exclude_regex`: optional filters applied to subdirectory names
-
-Outputs:
-- `dir_path`: full path to the selected subdirectory (wire this into nodes like Inspire's "Load image batch from dir")
-- `dir_name`, `index`, `total`
-
 ### Pick Path By Index
 
 Inputs:
 - `root_dir`: a directory containing items to pick from
 - `kind`: `dirs` or `files`
-- `index`: which entry to pick (defaults to increment-after-generate to support queue batching)
+- `index`: 0-based entry index.
+  - This node sets the `index` widget default `control_after_generate` to `increment` (so queue batching “just works”).
+  - You can switch it back to fixed in the UI via the widget’s “Control after generate” option.
 - `sort`: `natural` (default), `name`, `name_desc`, `mtime`, `mtime_desc`
 - `on_out_of_range`: `wrap` (default), `error`, or `clamp`
 - `include_regex` / `exclude_regex`: optional filters applied to entry names
@@ -93,6 +82,25 @@ Outputs:
 - `name`: basename
 - `stem`: basename without extension
 - `index`, `total`
+
+Notes:
+- `on_out_of_range=wrap` uses modulo (`index % total`) so the selection cycles.
+- The node shows a live “Selection” preview in the node UI (and updates after execution too).
+
+### Pick Subdirectory (Index) [Deprecated]
+
+This is kept for old workflows, but `PickPathByIndex(kind=dirs)` replaces it.
+
+Inputs:
+- `root_dir`: a directory containing subdirectories (e.g. one subdir per video, each containing PNG frames)
+- `index`: which subdirectory to pick (supports increment-after-generate)
+- `sort`: `natural` (default), `name`, `name_desc`, `mtime`, `mtime_desc`
+- `on_out_of_range`: `error` (default), `clamp`, or `wrap`
+- `include_regex` / `exclude_regex`: optional filters applied to subdirectory names
+
+Outputs:
+- `dir_path`: full path to the selected subdirectory (wire this into nodes like Inspire's "Load image batch from dir")
+- `dir_name`, `index`, `total`
 
 ## Disk location
 

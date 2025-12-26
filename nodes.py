@@ -552,8 +552,9 @@ def _list_entries(
 
 class PickSubdirectory:
     DESCRIPTION = (
+        "Deprecated: use PickPathByIndex(kind=dirs) instead.\n"
         "Picks a subdirectory of root_dir by index and outputs the full directory path.\n"
-        "Useful for driving other nodes (e.g. Inspire 'Load image batch from dir') via a Primitive-incremented index.\n"
+        "Useful for driving other nodes (e.g. Inspire 'Load image batch from dir') via an incrementing index.\n"
         "The node UI shows the indexed directory list for convenience."
     )
 
@@ -562,7 +563,16 @@ class PickSubdirectory:
         return {
             "required": {
                 "root_dir": ("STRING", {"default": ""}),
-                "index": ("INT", {"default": 0, "min": 0, "max": 1_000_000_000}),
+                "index": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 1_000_000_000,
+                        "step": 1,
+                        "control_after_generate": "increment",
+                    },
+                ),
                 "sort": (["natural", "name", "name_desc", "mtime", "mtime_desc"], {"default": "natural"}),
                 "on_out_of_range": (["error", "clamp", "wrap"], {"default": "error"}),
                 "include_regex": ("STRING", {"default": ""}),
@@ -574,7 +584,7 @@ class PickSubdirectory:
     RETURN_TYPES = ("STRING", "STRING", "INT", "INT")
     RETURN_NAMES = ("dir_path", "dir_name", "index", "total")
     FUNCTION = "pick"
-    CATEGORY = "save-load-lat-cond"
+    CATEGORY = "save-load-lat-cond/deprecated"
 
     @classmethod
     def IS_CHANGED(cls, root_dir, index, sort, on_out_of_range, include_regex, exclude_regex, max_list_items):
@@ -756,3 +766,101 @@ class PickPathByIndex:
             lines.append(f"... and {total - show} more")
 
         return {"ui": {"text": lines}, "result": (picked_path, picked, stem, int(idx), int(total))}
+
+
+def _pick_path_by_index_preview(
+    *,
+    root_dir: str,
+    kind: str,
+    index: int,
+    sort: str,
+    on_out_of_range: str,
+    include_regex: str,
+    exclude_regex: str,
+    extensions: str,
+    max_list_items: int,
+) -> Dict[str, Any]:
+    root_dir = os.path.expanduser(root_dir or "")
+    if not root_dir or not os.path.isdir(root_dir):
+        raise RuntimeError(f"root_dir is not a directory: {root_dir}")
+
+    names = _list_entries(
+        root_dir,
+        kind=str(kind),
+        include_regex=include_regex,
+        exclude_regex=exclude_regex,
+        extensions=extensions if str(kind) == "files" else "",
+        sort=sort,
+    )
+    total = len(names)
+    if total == 0:
+        raise RuntimeError("No matching entries found.")
+
+    idx = int(index)
+    if idx < 0 or idx >= total:
+        if on_out_of_range == "wrap":
+            idx = idx % total
+        elif on_out_of_range == "clamp":
+            idx = max(0, min(idx, total - 1))
+        else:
+            raise RuntimeError(f"index {idx} out of range (0..{total - 1}).")
+
+    picked = names[idx]
+    picked_path = os.path.join(root_dir, picked)
+    stem = Path(picked).stem
+
+    show = min(int(max_list_items), total)
+    lines = [
+        f"root_dir: {root_dir}",
+        f"kind: {kind}",
+        f"total: {total}",
+        f"picked: [{idx}] {picked}",
+        "entries:",
+    ]
+    for i, name in enumerate(names[:show]):
+        lines.append(f"[{i}] {name}")
+    if show < total:
+        lines.append(f"... and {total - show} more")
+
+    return {
+        "picked": {
+            "path": picked_path,
+            "name": picked,
+            "stem": stem,
+            "index": int(idx),
+            "total": int(total),
+        },
+        "lines": lines,
+    }
+
+
+def _register_pick_path_preview_route() -> None:
+    try:
+        from aiohttp import web  # type: ignore
+        from server import PromptServer  # type: ignore
+    except Exception:  # pragma: no cover
+        return
+
+    routes = PromptServer.instance.routes
+
+    @routes.post("/save_load_lat_cond/pick_path_preview")
+    async def _pick_path_preview(request):  # type: ignore
+        try:
+            data = await request.json()
+            payload = _pick_path_by_index_preview(
+                root_dir=str(data.get("root_dir", "")),
+                kind=str(data.get("kind", "dirs")),
+                index=int(data.get("index", 0)),
+                sort=str(data.get("sort", "natural")),
+                on_out_of_range=str(data.get("on_out_of_range", "wrap")),
+                include_regex=str(data.get("include_regex", "")),
+                exclude_regex=str(data.get("exclude_regex", "")),
+                extensions=str(data.get("extensions", "")),
+                max_list_items=int(data.get("max_list_items", 200)),
+            )
+            return web.json_response({"ok": True, **payload})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+
+_register_pick_path_preview_route()

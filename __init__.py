@@ -12,6 +12,6 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SaveLatentCond": "Save Latent + Cond (Queue)",
     "LoadLatentCond": "Load Latent + Cond (Queue)",
-    "PickSubdirectory": "Pick Subdirectory (Index)",
     "PickPathByIndex": "Pick Path By Index",
+    "PickSubdirectory": "Pick Subdirectory (Index) [Deprecated]",
 }
