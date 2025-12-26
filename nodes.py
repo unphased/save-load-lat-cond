@@ -4,6 +4,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 import torch
@@ -481,36 +482,60 @@ def _natural_key(text: str) -> List[Any]:
     return key
 
 
-def _list_subdirs(
+def _compile_regex(pattern: str) -> Optional[re.Pattern[str]]:
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return None
+    return re.compile(pattern)
+
+
+def _parse_extensions(extensions: str) -> Optional[set[str]]:
+    exts: set[str] = set()
+    for ext in (extensions or "").split(","):
+        ext = ext.strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = "." + ext
+        exts.add(ext)
+    return exts or None
+
+
+def _list_entries(
     root_dir: str,
     *,
+    kind: str,
     include_regex: str = "",
     exclude_regex: str = "",
+    extensions: str = "",
     sort: str = "natural",
 ) -> List[str]:
-    if not root_dir:
-        raise ValueError("root_dir is required.")
-    root_dir = os.path.expanduser(root_dir)
-    if not os.path.isdir(root_dir):
-        raise ValueError(f"root_dir is not a directory: {root_dir}")
+    if kind not in {"dirs", "files"}:
+        raise ValueError("kind must be 'dirs' or 'files'.")
 
-    include: Optional[re.Pattern[str]] = None
-    exclude: Optional[re.Pattern[str]] = None
-    if (include_regex or "").strip():
-        include = re.compile(include_regex)
-    if (exclude_regex or "").strip():
-        exclude = re.compile(exclude_regex)
+    include = _compile_regex(include_regex)
+    exclude = _compile_regex(exclude_regex)
+    exts = _parse_extensions(extensions) if kind == "files" else None
 
     names: List[str] = []
-    for name in os.listdir(root_dir):
-        path = os.path.join(root_dir, name)
-        if not os.path.isdir(path):
-            continue
-        if include is not None and include.search(name) is None:
-            continue
-        if exclude is not None and exclude.search(name) is not None:
-            continue
-        names.append(name)
+    try:
+        for name in os.listdir(root_dir):
+            path = os.path.join(root_dir, name)
+            if kind == "dirs":
+                ok = os.path.isdir(path)
+            else:
+                ok = os.path.isfile(path)
+                if ok and exts is not None:
+                    ok = Path(name).suffix.lower() in exts
+            if not ok:
+                continue
+            if include is not None and include.search(name) is None:
+                continue
+            if exclude is not None and exclude.search(name) is not None:
+                continue
+            names.append(name)
+    except Exception:
+        return []
 
     if sort == "name":
         names.sort()
@@ -571,8 +596,12 @@ class PickSubdirectory:
 
     def pick(self, root_dir, index, sort, on_out_of_range, include_regex, exclude_regex, max_list_items):
         root_dir = os.path.expanduser(root_dir or "")
-        names = _list_subdirs(
+        if not root_dir or not os.path.isdir(root_dir):
+            raise RuntimeError(f"root_dir is not a directory: {root_dir}")
+
+        names = _list_entries(
             root_dir,
+            kind="dirs",
             include_regex=include_regex,
             exclude_regex=exclude_regex,
             sort=sort,
@@ -604,3 +633,126 @@ class PickSubdirectory:
             "ui": {"text": lines},
             "result": (picked_path, picked, int(idx), int(total)),
         }
+
+
+class PickPathByIndex:
+    DESCRIPTION = (
+        "Pick a directory or file under root_dir by index.\n"
+        "Designed to pair with an INT input set to control_after_generate=increment.\n"
+        "Outputs full path + basename; includes a UI preview list."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "root_dir": ("STRING", {"default": ""}),
+                "kind": (["dirs", "files"], {"default": "dirs"}),
+                "index": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 1_000_000_000,
+                        "step": 1,
+                        "control_after_generate": "increment",
+                    },
+                ),
+                "sort": (["natural", "name", "name_desc", "mtime", "mtime_desc"], {"default": "natural"}),
+                "on_out_of_range": (["error", "clamp", "wrap"], {"default": "wrap"}),
+                "include_regex": ("STRING", {"default": ""}),
+                "exclude_regex": ("STRING", {"default": ""}),
+                "extensions": ("STRING", {"default": ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"}),
+                "max_list_items": ("INT", {"default": 200, "min": 1, "max": 2000}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "INT", "INT")
+    RETURN_NAMES = ("path", "name", "stem", "index", "total")
+    FUNCTION = "pick"
+    CATEGORY = "save-load-lat-cond"
+
+    @classmethod
+    def IS_CHANGED(
+        cls,
+        root_dir,
+        kind,
+        index,
+        sort,
+        on_out_of_range,
+        include_regex,
+        exclude_regex,
+        extensions,
+        max_list_items,
+    ):
+        root_dir = os.path.expanduser(root_dir or "")
+        try:
+            stamp = int(os.path.getmtime(root_dir)) if root_dir and os.path.isdir(root_dir) else 0
+            count = 0
+            if root_dir and os.path.isdir(root_dir):
+                if kind == "dirs":
+                    count = sum(1 for n in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, n)))
+                else:
+                    count = sum(1 for n in os.listdir(root_dir) if os.path.isfile(os.path.join(root_dir, n)))
+        except Exception:
+            stamp, count = 0, 0
+        return (
+            f"{root_dir}:{kind}:{stamp}:{count}:{sort}:{include_regex}:{exclude_regex}:"
+            f"{extensions}:{max_list_items}:{on_out_of_range}:{index}"
+        )
+
+    def pick(
+        self,
+        root_dir,
+        kind,
+        index,
+        sort,
+        on_out_of_range,
+        include_regex,
+        exclude_regex,
+        extensions,
+        max_list_items,
+    ):
+        root_dir = os.path.expanduser(root_dir or "")
+        if not root_dir or not os.path.isdir(root_dir):
+            raise RuntimeError(f"root_dir is not a directory: {root_dir}")
+
+        names = _list_entries(
+            root_dir,
+            kind=str(kind),
+            include_regex=include_regex,
+            exclude_regex=exclude_regex,
+            extensions=extensions if str(kind) == "files" else "",
+            sort=sort,
+        )
+        total = len(names)
+        if total == 0:
+            raise RuntimeError("No matching entries found.")
+
+        idx = int(index)
+        if idx < 0 or idx >= total:
+            if on_out_of_range == "wrap":
+                idx = idx % total
+            elif on_out_of_range == "clamp":
+                idx = max(0, min(idx, total - 1))
+            else:
+                raise RuntimeError(f"index {idx} out of range (0..{total - 1}).")
+
+        picked = names[idx]
+        picked_path = os.path.join(root_dir, picked)
+        stem = Path(picked).stem
+
+        show = min(int(max_list_items), total)
+        lines = [
+            f"root_dir: {root_dir}",
+            f"kind: {kind}",
+            f"total: {total}",
+            f"picked: [{idx}] {picked}",
+            "entries:",
+        ]
+        for i, name in enumerate(names[:show]):
+            lines.append(f"[{i}] {name}")
+        if show < total:
+            lines.append(f"... and {total - show} more")
+
+        return {"ui": {"text": lines}, "result": (picked_path, picked, stem, int(idx), int(total))}

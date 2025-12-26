@@ -1,1 +1,1 @@
-refer ~/GLOBAL_AGENTS.md.
+follow the instructions specified in ~/GLOBAL_AGENTS.md.

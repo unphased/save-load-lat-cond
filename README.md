@@ -1,18 +1,34 @@
-This ComfyUI custom node lets you save and load latent image and conditioning triplets. 
+This is a collection of ComfyUI custom nodes I made to streamline some more "batchy" workflows. 
 
-I made this so I can batch a bunch of Wan 2.2 high noise inference latents and then finish them off with the low noise
-model so that generating videos don't all waste time waiting for that VRAM shuffle.
+There are 2 groups of functionality so far: 
 
-In order to use this: 
+1. Save/Load Latent + Conditioning nodes: Save and load latent image and conditioning triplets.
 
-1. take your working wan video gen workflow and make two copies
-2. in the first one (high noise stage A) put the output latent of the first ksampler and its conditioning into the save node.
-3. in the second one (low noise stage B) use the load node and pipe all outputs into the second ksampler.
-4. you can delete the unused nodes, so stage A only has a high noise model load in it, and stage B only has a low noise
-   model load in it!
-5. When generating with this technique if you make a batch of size N outputs, just queue up N jobs of stage A and then N
-   jobs of stage B after. Just make sure to consume the queue of saved latents.
-6. Profit by only wasting the time to load the model to the GPU **one time**.
+   I made this so I can batch a bunch of Wan 2.2 high noise inference latents and then finish them off with the low noise
+   model so that generating videos don't waste a bunch of time waiting for that VRAM to evict the high noise model and
+   load in the low noise model for EACH generation. The tradeoff is that you have to split this processing into two
+   workflows and batch them separately, so you don't get to see intermediate results while you run a big batch.
+
+   In order to use this: 
+
+   1. take your working wan video gen workflow and make two copies of it.
+   2. in the first one (high noise inference, call it stage A) put the output latent of the first ksampler and its conditioning inputs into the Save node.
+   3. in the second one (low noise inference, call it stage B) use the Load node, and pipe all outputs into the second ksampler.
+   4. you can delete the unused nodes, so stage A workflow only has your high noise model load in it, and stage B workflow only has a low noise
+      model load in it!
+   5. When generating with this technique if you make a batch of size N outputs, just queue up N jobs of stage A and then N
+      jobs of stage B after.
+
+2. Pick Path by Index node: Batch iterate through inputs, usable for images, video files, and video frame dirs.
+
+   This one allows for a streamlined way to capture the behavior of specifying a directory in which inputs are staged
+   for pipelined ingestion in batches. Furthermore, this provides useful string output of the basename of the path
+   chosen, so you can wire that up into the outputs, making it much easier to correlate the names of the inputs used by
+   the workflow with the names of its output products. 
+
+   You can prepare N images or videos in a dir, or even subdirs each containing the frames of a video (much better
+   quality, highly recommended), set the after generation behavior to increment on the integer index and watch comfyui
+   chug along running the workflow against everything. 
 
 ## Install
 
@@ -60,6 +76,23 @@ Inputs:
 Outputs:
 - `dir_path`: full path to the selected subdirectory (wire this into nodes like Inspire's "Load image batch from dir")
 - `dir_name`, `index`, `total`
+
+### Pick Path By Index
+
+Inputs:
+- `root_dir`: a directory containing items to pick from
+- `kind`: `dirs` or `files`
+- `index`: which entry to pick (defaults to increment-after-generate to support queue batching)
+- `sort`: `natural` (default), `name`, `name_desc`, `mtime`, `mtime_desc`
+- `on_out_of_range`: `wrap` (default), `error`, or `clamp`
+- `include_regex` / `exclude_regex`: optional filters applied to entry names
+- `extensions`: file-only filter (comma-separated, e.g. `.png,.jpg,.webp`; empty means allow all)
+
+Outputs:
+- `path`: full path to the selected entry
+- `name`: basename
+- `stem`: basename without extension
+- `index`, `total`
 
 ## Disk location
 
