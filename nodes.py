@@ -4,7 +4,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import torch
 
@@ -464,4 +464,143 @@ class LoadLatentCond:
                 _to_device(negative, device),
                 int(after_cursor),
             ),
+        }
+
+
+def _natural_key(text: str) -> List[Any]:
+    parts = re.split(r"(\d+)", text)
+    key: List[Any] = []
+    for part in parts:
+        if part.isdigit():
+            try:
+                key.append(int(part))
+            except Exception:  # pragma: no cover
+                key.append(part)
+        else:
+            key.append(part.lower())
+    return key
+
+
+def _list_subdirs(
+    root_dir: str,
+    *,
+    include_regex: str = "",
+    exclude_regex: str = "",
+    sort: str = "natural",
+) -> List[str]:
+    if not root_dir:
+        raise ValueError("root_dir is required.")
+    root_dir = os.path.expanduser(root_dir)
+    if not os.path.isdir(root_dir):
+        raise ValueError(f"root_dir is not a directory: {root_dir}")
+
+    include: Optional[re.Pattern[str]] = None
+    exclude: Optional[re.Pattern[str]] = None
+    if (include_regex or "").strip():
+        include = re.compile(include_regex)
+    if (exclude_regex or "").strip():
+        exclude = re.compile(exclude_regex)
+
+    names: List[str] = []
+    for name in os.listdir(root_dir):
+        path = os.path.join(root_dir, name)
+        if not os.path.isdir(path):
+            continue
+        if include is not None and include.search(name) is None:
+            continue
+        if exclude is not None and exclude.search(name) is not None:
+            continue
+        names.append(name)
+
+    if sort == "name":
+        names.sort()
+    elif sort == "name_desc":
+        names.sort(reverse=True)
+    elif sort == "mtime":
+        names.sort(key=lambda n: os.path.getmtime(os.path.join(root_dir, n)))
+    elif sort == "mtime_desc":
+        names.sort(key=lambda n: os.path.getmtime(os.path.join(root_dir, n)), reverse=True)
+    else:  # natural
+        names.sort(key=_natural_key)
+    return names
+
+
+class PickSubdirectory:
+    DESCRIPTION = (
+        "Picks a subdirectory of root_dir by index and outputs the full directory path.\n"
+        "Useful for driving other nodes (e.g. Inspire 'Load image batch from dir') via a Primitive-incremented index.\n"
+        "The node UI shows the indexed directory list for convenience."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "root_dir": ("STRING", {"default": ""}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 1_000_000_000}),
+                "sort": (["natural", "name", "name_desc", "mtime", "mtime_desc"], {"default": "natural"}),
+                "on_out_of_range": (["error", "clamp", "wrap"], {"default": "error"}),
+                "include_regex": ("STRING", {"default": ""}),
+                "exclude_regex": ("STRING", {"default": ""}),
+                "max_list_items": ("INT", {"default": 200, "min": 1, "max": 2000}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT")
+    RETURN_NAMES = ("dir_path", "dir_name", "index", "total")
+    FUNCTION = "pick"
+    CATEGORY = "save-load-lat-cond"
+
+    @classmethod
+    def IS_CHANGED(cls, root_dir, index, sort, on_out_of_range, include_regex, exclude_regex, max_list_items):
+        root_dir = os.path.expanduser(root_dir or "")
+        try:
+            # Root mtime changes on add/remove/rename of subdirs in most cases.
+            stamp = int(os.path.getmtime(root_dir)) if root_dir and os.path.isdir(root_dir) else 0
+            count = 0
+            if root_dir and os.path.isdir(root_dir):
+                count = sum(
+                    1
+                    for name in os.listdir(root_dir)
+                    if os.path.isdir(os.path.join(root_dir, name))
+                )
+        except Exception:  # pragma: no cover
+            stamp = 0
+            count = 0
+        return f"{root_dir}:{stamp}:{count}:{sort}:{include_regex}:{exclude_regex}:{max_list_items}:{on_out_of_range}:{index}"
+
+    def pick(self, root_dir, index, sort, on_out_of_range, include_regex, exclude_regex, max_list_items):
+        root_dir = os.path.expanduser(root_dir or "")
+        names = _list_subdirs(
+            root_dir,
+            include_regex=include_regex,
+            exclude_regex=exclude_regex,
+            sort=sort,
+        )
+        total = len(names)
+        if total == 0:
+            raise RuntimeError("No matching subdirectories found.")
+
+        idx = int(index)
+        if idx < 0 or idx >= total:
+            if on_out_of_range == "wrap":
+                idx = idx % total
+            elif on_out_of_range == "clamp":
+                idx = max(0, min(idx, total - 1))
+            else:
+                raise RuntimeError(f"index {idx} out of range (0..{total - 1}).")
+
+        picked = names[idx]
+        picked_path = os.path.join(root_dir, picked)
+
+        show = min(int(max_list_items), total)
+        lines = [f"root_dir: {root_dir}", f"total: {total}", f"picked: [{idx}] {picked}", "subdirs:"]
+        for i, name in enumerate(names[:show]):
+            lines.append(f"[{i}] {name}")
+        if show < total:
+            lines.append(f"... and {total - show} more")
+
+        return {
+            "ui": {"text": lines},
+            "result": (picked_path, picked, int(idx), int(total)),
         }

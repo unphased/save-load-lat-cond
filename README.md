@@ -48,6 +48,19 @@ The load node also exposes a `cursor` widget/output (0-based index of the next u
 - `reset_cursor=true` starts from `cursor=0`
 - setting `cursor>=0` overrides where the next load starts
 
+### Pick Subdirectory (Index)
+
+Inputs:
+- `root_dir`: a directory containing subdirectories (e.g. one subdir per video, each containing PNG frames)
+- `index`: which subdirectory to pick (use a Primitive with increment for batching)
+- `sort`: `natural` (default), `name`, `name_desc`, `mtime`, `mtime_desc`
+- `on_out_of_range`: `error` (default), `clamp`, or `wrap`
+- `include_regex` / `exclude_regex`: optional filters applied to subdirectory names
+
+Outputs:
+- `dir_path`: full path to the selected subdirectory (wire this into nodes like Inspire's "Load image batch from dir")
+- `dir_name`, `index`, `total`
+
 ## Disk location
 
 When `storage=disk`, items are saved as `.pt` files under ComfyUI's output directory:
