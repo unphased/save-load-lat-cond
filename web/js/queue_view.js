@@ -1,4 +1,4 @@
-import { app } from "../../scripts/app.js";
+import { app } from "../../../scripts/app.js";
 
 function coerceLines(value) {
   if (!value) return "";
@@ -49,4 +49,3 @@ app.registerExtension({
     };
   },
 });
-

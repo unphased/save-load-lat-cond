@@ -1,5 +1,5 @@
-import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
 
 function coerceLines(value) {
   if (!value) return "";
@@ -129,4 +129,3 @@ app.registerExtension({
     };
   },
 });
-
