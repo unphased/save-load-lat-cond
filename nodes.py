@@ -647,9 +647,14 @@ class PickSubdirectory:
 
 class PickPathByIndex:
     DESCRIPTION = (
-        "Pick a directory or file under root_dir by index.\n"
-        "Designed to pair with an INT input set to control_after_generate=increment.\n"
-        "Outputs full path + basename; includes a UI preview list."
+        "Pick a directory or file under root_dir by 0-based index.\n"
+        "Batching: the index INT widget defaults to Control-after-generate=increment (you can change it in the UI).\n"
+        "Out-of-range: wrap uses modulo (index % total) so it cycles.\n"
+        "Outputs:\n"
+        "- path: full path\n"
+        "- name: basename (e.g. clip_001.png)\n"
+        "- stem: basename without extension (e.g. clip_001; same as name for dirs)\n"
+        "UI: shows a live Selection preview list."
     )
 
     @classmethod
