@@ -1,5 +1,10 @@
 import { app } from "../../../scripts/app.js";
 
+if (globalThis.__saveLoadLatCondQueueViewLoaded) {
+  // avoid double-registering if ComfyUI loads both root + /js scripts
+} else {
+  globalThis.__saveLoadLatCondQueueViewLoaded = true;
+
 function coerceLines(value) {
   if (!value) return "";
   if (Array.isArray(value)) return value.join("\n");
@@ -49,3 +54,5 @@ app.registerExtension({
     };
   },
 });
+
+}

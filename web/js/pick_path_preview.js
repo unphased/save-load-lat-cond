@@ -1,6 +1,11 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
+if (globalThis.__saveLoadLatCondPickPathPreviewLoaded) {
+  // avoid double-registering if ComfyUI loads both root + /js scripts
+} else {
+  globalThis.__saveLoadLatCondPickPathPreviewLoaded = true;
+
 function coerceLines(value) {
   if (!value) return "";
   if (Array.isArray(value)) return value.join("\n");
@@ -129,3 +134,5 @@ app.registerExtension({
     };
   },
 });
+
+}
