@@ -661,8 +661,20 @@ class PickPathByIndex:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "root_dir": ("STRING", {"default": ""}),
-                "kind": (["dirs", "files"], {"default": "dirs"}),
+                "root_dir": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": "Directory to list entries from (root).",
+                    },
+                ),
+                "kind": (
+                    ["dirs", "files"],
+                    {
+                        "default": "dirs",
+                        "tooltip": "What to pick under root_dir: subdirectories or files.",
+                    },
+                ),
                 "index": (
                     "INT",
                     {
@@ -671,19 +683,74 @@ class PickPathByIndex:
                         "max": 1_000_000_000,
                         "step": 1,
                         "control_after_generate": "increment",
+                        "tooltip": (
+                            "0-based entry index. Defaults to Control-after-generate=increment for queue batching; "
+                            "change it in the UI if you want fixed. With on_out_of_range=wrap, index cycles via "
+                            "(index % total)."
+                        ),
                     },
                 ),
-                "sort": (["natural", "name", "name_desc", "mtime", "mtime_desc"], {"default": "natural"}),
-                "on_out_of_range": (["error", "clamp", "wrap"], {"default": "wrap"}),
-                "include_regex": ("STRING", {"default": ""}),
-                "exclude_regex": ("STRING", {"default": ""}),
-                "extensions": ("STRING", {"default": ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"}),
-                "max_list_items": ("INT", {"default": 200, "min": 1, "max": 2000}),
+                "sort": (
+                    ["natural", "name", "name_desc", "mtime", "mtime_desc"],
+                    {
+                        "default": "natural",
+                        "tooltip": "Sort order for the entries list before indexing.",
+                    },
+                ),
+                "on_out_of_range": (
+                    ["error", "clamp", "wrap"],
+                    {
+                        "default": "wrap",
+                        "tooltip": (
+                            "What to do when index is outside 0..total-1: error, clamp, or wrap (modulo cycling)."
+                        ),
+                    },
+                ),
+                "include_regex": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": "Optional regex filter: only include entries whose names match.",
+                    },
+                ),
+                "exclude_regex": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": "Optional regex filter: exclude entries whose names match.",
+                    },
+                ),
+                "extensions": (
+                    "STRING",
+                    {
+                        "default": ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff",
+                        "tooltip": (
+                            "Only used when kind=files. Comma-separated extensions (e.g. .png,.jpg). "
+                            "Leave empty to allow all files."
+                        ),
+                    },
+                ),
+                "max_list_items": (
+                    "INT",
+                    {
+                        "default": 200,
+                        "min": 1,
+                        "max": 2000,
+                        "tooltip": "How many entries to show in the on-node preview list (UI only).",
+                    },
+                ),
             }
         }
 
     RETURN_TYPES = ("STRING", "STRING", "STRING", "INT", "INT")
     RETURN_NAMES = ("path", "name", "stem", "index", "total")
+    RETURN_TOOLTIPS = (
+        "Full path to the selected entry.",
+        "Basename of the selected entry (e.g. clip_001.png).",
+        "Basename without extension (e.g. clip_001; same as name for directories).",
+        "Effective 0-based index used after applying out-of-range behavior.",
+        "Total number of matching entries under root_dir.",
+    )
     FUNCTION = "pick"
     CATEGORY = "save-load-lat-cond"
 
