@@ -15,11 +15,6 @@ function attachQueueWidget(node) {
   if (node.__saveLoadLatCondQueueWidgetAttached) return;
   node.__saveLoadLatCondQueueWidgetAttached = true;
   node.__saveLoadLatCondQueueLines = [];
-  node.__saveLoadLatCondQueueHeight = 210;
-
-  const minHeight = 420;
-  const height = Math.max(node.size?.[1] ?? 0, minHeight);
-  node.setSize([node.size?.[0] ?? 320, height]);
 }
 
 function updateQueueWidget(node, message) {
@@ -43,17 +38,23 @@ function truncateToWidth(ctx, text, maxWidth) {
   return text.slice(0, Math.max(0, lo - 1)) + ellipsis;
 }
 
+function estimatedWidgetsEndY(node) {
+  const widgetCount = node.widgets?.length ?? 0;
+  const titleHeight = globalThis.LiteGraph?.NODE_TITLE_HEIGHT ?? 30;
+  const widgetHeight = globalThis.LiteGraph?.NODE_WIDGET_HEIGHT ?? 20;
+  const startY = node.widgets_start_y ?? (titleHeight + 10); // ~40 default
+  return startY + widgetCount * widgetHeight;
+}
+
 function drawQueueBox(node, ctx) {
   const lines = node.__saveLoadLatCondQueueLines ?? [];
-  const boxHeight = node.__saveLoadLatCondQueueHeight ?? 210;
-  if (!boxHeight) return;
-
   const pad = 10;
   const x = pad;
-  const y = (node.size?.[1] ?? 0) - boxHeight;
   const w = (node.size?.[0] ?? 0) - pad * 2;
-  const h = boxHeight - pad;
-  if (w <= 40 || h <= 30 || y < 0) return;
+  const widgetsEnd = estimatedWidgetsEndY(node);
+  const y = Math.max(widgetsEnd + pad, pad);
+  const h = (node.size?.[1] ?? 0) - y - pad;
+  if (w <= 40 || h <= 70) return;
 
   ctx.save();
   ctx.fillStyle = "rgba(10, 10, 10, 0.35)";
