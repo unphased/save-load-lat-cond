@@ -16,13 +16,16 @@ function attachPreviewWidget(node) {
   if (node.__saveLoadLatCondPickPathPreviewAttached) return;
   node.__saveLoadLatCondPickPathPreviewAttached = true;
 
-  const widget = node.addWidget("text", "Selection", "", null, { multiline: true });
+  const widgetHeight = 190;
+  const widget = node.addWidget("text", "Selection", "", () => {}, { multiline: true });
   widget.options = widget.options || {};
   widget.options.multiline = true;
+  widget.options.height = widgetHeight;
   widget.options.serialize = false;
+  widget.computeSize = (width) => [width, widgetHeight];
   node.__saveLoadLatCondPickPathPreviewWidget = widget;
 
-  const height = Math.max(node.size?.[1] ?? 0, 260);
+  const height = Math.max(node.size?.[1] ?? 0, 140 + widgetHeight);
   node.setSize([node.size?.[0] ?? 340, height]);
 }
 

@@ -15,14 +15,17 @@ function attachQueueWidget(node) {
   if (node.__saveLoadLatCondQueueWidgetAttached) return;
   node.__saveLoadLatCondQueueWidgetAttached = true;
 
-  const widget = node.addWidget("text", "Queue", "", null, { multiline: true });
+  const widgetHeight = 190;
+  const widget = node.addWidget("text", "Queue", "", () => {}, { multiline: true });
   widget.options = widget.options || {};
   widget.options.multiline = true;
+  widget.options.height = widgetHeight;
   widget.options.serialize = false;
+  widget.computeSize = (width) => [width, widgetHeight];
 
   node.__saveLoadLatCondQueueWidget = widget;
 
-  const height = Math.max(node.size?.[1] ?? 0, 260);
+  const height = Math.max(node.size?.[1] ?? 0, 140 + widgetHeight);
   node.setSize([node.size?.[0] ?? 320, height]);
 }
 

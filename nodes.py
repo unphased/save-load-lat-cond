@@ -550,6 +550,54 @@ def _list_entries(
     return names
 
 
+def _format_indexed_preview_lines(
+    *,
+    root_dir: str,
+    kind: str,
+    names: List[str],
+    picked_index: int,
+    max_list_items: int,
+) -> List[str]:
+    total = len(names)
+    picked_index = max(0, min(int(picked_index), total - 1))
+
+    show = min(max(1, int(max_list_items)), total)
+    half = show // 2
+    start = max(0, picked_index - half)
+    end = min(total, start + show)
+    start = max(0, end - show)
+
+    picked_name = names[picked_index]
+    picked_path = os.path.join(root_dir, picked_name)
+    picked_stem = Path(picked_name).stem
+    lines = [
+        f"picked: [{picked_index}/{total - 1}] {picked_name}",
+        f"path: {picked_path}",
+        f"stem: {picked_stem}",
+        f"kind: {kind}   total: {total}",
+        f"root_dir: {root_dir}",
+        "",
+        f"entries (showing {start}..{end - 1}):",
+    ]
+
+    for i in range(start, end):
+        mark = ">" if i == picked_index else " "
+        lines.append(f"{mark} [{i}] {names[i]}")
+
+    before = start
+    after = total - end
+    if before or after:
+        suffix = []
+        if before:
+            suffix.append(f"{before} before")
+        if after:
+            suffix.append(f"{after} after")
+        lines.append("")
+        lines.append("... " + ", ".join(suffix))
+
+    return lines
+
+
 class PickSubdirectory:
     DESCRIPTION = (
         "Deprecated: use PickPathByIndex(kind=dirs) instead.\n"
@@ -824,18 +872,13 @@ class PickPathByIndex:
         picked_path = os.path.join(root_dir, picked)
         stem = Path(picked).stem
 
-        show = min(int(max_list_items), total)
-        lines = [
-            f"root_dir: {root_dir}",
-            f"kind: {kind}",
-            f"total: {total}",
-            f"picked: [{idx}] {picked}",
-            "entries:",
-        ]
-        for i, name in enumerate(names[:show]):
-            lines.append(f"[{i}] {name}")
-        if show < total:
-            lines.append(f"... and {total - show} more")
+        lines = _format_indexed_preview_lines(
+            root_dir=root_dir,
+            kind=str(kind),
+            names=names,
+            picked_index=idx,
+            max_list_items=max_list_items,
+        )
 
         return {"ui": {"text": lines}, "result": (picked_path, picked, stem, int(idx), int(total))}
 
@@ -881,18 +924,13 @@ def _pick_path_by_index_preview(
     picked_path = os.path.join(root_dir, picked)
     stem = Path(picked).stem
 
-    show = min(int(max_list_items), total)
-    lines = [
-        f"root_dir: {root_dir}",
-        f"kind: {kind}",
-        f"total: {total}",
-        f"picked: [{idx}] {picked}",
-        "entries:",
-    ]
-    for i, name in enumerate(names[:show]):
-        lines.append(f"[{i}] {name}")
-    if show < total:
-        lines.append(f"... and {total - show} more")
+    lines = _format_indexed_preview_lines(
+        root_dir=root_dir,
+        kind=str(kind),
+        names=names,
+        picked_index=idx,
+        max_list_items=max_list_items,
+    )
 
     return {
         "picked": {
