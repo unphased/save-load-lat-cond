@@ -60,12 +60,39 @@ function wrapToWidth(ctx, text, maxWidth) {
   return out;
 }
 
-function estimatedWidgetsEndY(node) {
-  const widgetCount = node.widgets?.length ?? 0;
+function widgetsEndY(node) {
+  const widgets = node.widgets ?? [];
   const titleHeight = globalThis.LiteGraph?.NODE_TITLE_HEIGHT ?? 30;
   const widgetHeight = globalThis.LiteGraph?.NODE_WIDGET_HEIGHT ?? 20;
-  const startY = node.widgets_start_y ?? (titleHeight + 10); // ~40 default
-  return startY + widgetCount * widgetHeight;
+  const startY = typeof node.widgets_start_y === "number" ? node.widgets_start_y : titleHeight + 10;
+
+  let endY = startY;
+  const width = (node.size?.[0] ?? 320) - 20;
+
+  for (let i = 0; i < widgets.length; i++) {
+    const w = widgets[i] ?? {};
+    const wy =
+      typeof w.y === "number"
+        ? w.y
+        : typeof w.last_y === "number"
+          ? w.last_y
+          : startY + i * widgetHeight;
+
+    let wh = 0;
+    if (typeof w.computeSize === "function") {
+      try {
+        const size = w.computeSize(width);
+        wh = Array.isArray(size) ? Number(size[1] ?? 0) : 0;
+      } catch {
+        wh = 0;
+      }
+    }
+    if (!wh) wh = Number(w.options?.height ?? w.height ?? w.h ?? widgetHeight) || widgetHeight;
+
+    endY = Math.max(endY, wy + wh);
+  }
+
+  return endY;
 }
 
 function drawPreviewBox(node, ctx) {
@@ -73,7 +100,7 @@ function drawPreviewBox(node, ctx) {
   const pad = 10;
   const x = pad;
   const w = (node.size?.[0] ?? 0) - pad * 2;
-  const widgetsEnd = estimatedWidgetsEndY(node);
+  const widgetsEnd = widgetsEndY(node);
   const y = Math.max(widgetsEnd + pad, pad);
   const h = (node.size?.[1] ?? 0) - y - pad;
   if (w <= 40 || h <= 70) return;
